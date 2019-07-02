@@ -31,6 +31,10 @@ type (
 		DefaultValue *string
 		Type         *Type
 	}
+
+	Service struct {
+		SDL string `json:"sdl"`
+	}
 )
 
 func WrapSchema(schema *ast.Schema) *Schema {

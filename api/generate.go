@@ -6,6 +6,7 @@ import (
 	"github.com/99designs/gqlgen/codegen"
 	"github.com/99designs/gqlgen/codegen/config"
 	"github.com/99designs/gqlgen/plugin"
+	"github.com/99designs/gqlgen/plugin/federation"
 	"github.com/99designs/gqlgen/plugin/modelgen"
 	"github.com/99designs/gqlgen/plugin/resolvergen"
 	"github.com/99designs/gqlgen/plugin/schemaconfig"
@@ -17,14 +18,30 @@ func Generate(cfg *config.Config, option ...Option) error {
 	_ = syscall.Unlink(cfg.Exec.Filename)
 	_ = syscall.Unlink(cfg.Model.Filename)
 
+	if err := cfg.Check(); err != nil {
+		return err
+	}
 	plugins := []plugin.Plugin{
 		schemaconfig.New(),
 		modelgen.New(),
 		resolvergen.New(),
 	}
+	if cfg.Federated {
+		plugins = append([]plugin.Plugin{federation.New()}, plugins...)
+	}
 
 	for _, o := range option {
 		o(cfg, &plugins)
+	}
+
+	schemaMutators := []codegen.SchemaMutator{}
+	for _, p := range plugins {
+		if inj, ok := p.(plugin.SourcesInjector); ok {
+			inj.InjectSources(cfg)
+		}
+		if mut, ok := p.(codegen.SchemaMutator); ok {
+			schemaMutators = append(schemaMutators, mut)
+		}
 	}
 
 	for _, p := range plugins {
@@ -35,14 +52,11 @@ func Generate(cfg *config.Config, option ...Option) error {
 			}
 		}
 	}
+
 	// Merge again now that the generated models have been injected into the typemap
-	data, err := codegen.BuildData(cfg)
+	data, err := codegen.BuildData(cfg, schemaMutators)
 	if err != nil {
 		return errors.Wrap(err, "merging failed")
-	}
-
-	if err = codegen.GenerateCode(data); err != nil {
-		return errors.Wrap(err, "generating core failed")
 	}
 
 	for _, p := range plugins {
@@ -52,6 +66,10 @@ func Generate(cfg *config.Config, option ...Option) error {
 				return errors.Wrap(err, p.Name())
 			}
 		}
+	}
+
+	if err = codegen.GenerateCode(data); err != nil {
+		return errors.Wrap(err, "generating core failed")
 	}
 
 	if err := validate(cfg); err != nil {

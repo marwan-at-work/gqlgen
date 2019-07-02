@@ -63,11 +63,7 @@ func (m *Plugin) Name() string {
 }
 
 func (m *Plugin) MutateConfig(cfg *config.Config) error {
-	if err := cfg.Check(); err != nil {
-		return err
-	}
-
-	schema, _, err := cfg.LoadSchema()
+	schema, err := cfg.LoadSchema()
 	if err != nil {
 		return err
 	}
@@ -88,11 +84,18 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 		PackageName: cfg.Model.Package,
 	}
 
+	var hasEntity bool
 	for _, schemaType := range schema.Types {
 		if cfg.Models.UserDefined(schemaType.Name) {
 			continue
 		}
-
+		var ent bool
+		for _, dir := range schemaType.Directives {
+			if dir.Name == "key" {
+				hasEntity = true
+				ent = true
+			}
+		}
 		switch schemaType.Kind {
 		case ast.Interface, ast.Union:
 			it := &Interface{
@@ -112,6 +115,9 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 
 			for _, implementor := range schema.GetImplements(schemaType) {
 				it.Implements = append(it.Implements, implementor.Name)
+			}
+			if ent { // only when Object. Directive validation should have occured on InputObject otherwise.
+				it.Implements = append(it.Implements, "_Entity")
 			}
 
 			for _, field := range schemaType.Fields {
@@ -200,6 +206,14 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 		case ast.Scalar:
 			b.Scalars = append(b.Scalars, schemaType.Name)
 		}
+	}
+
+	if hasEntity {
+		it := &Interface{
+			Description: "_Entity represents all types with @key",
+			Name:        "_Entity",
+		}
+		b.Interfaces = append(b.Interfaces, it)
 	}
 
 	sort.Slice(b.Enums, func(i, j int) bool { return b.Enums[i].Name < b.Enums[j].Name })

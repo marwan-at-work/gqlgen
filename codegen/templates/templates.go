@@ -171,6 +171,7 @@ func Funcs() template.FuncMap {
 		"lookupImport":  CurrentImports.Lookup,
 		"go":            ToGo,
 		"goPrivate":     ToGoPrivate,
+		"title":         strings.Title,
 		"add": func(a, b int) int {
 			return a + b
 		},
