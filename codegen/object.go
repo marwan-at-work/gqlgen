@@ -109,25 +109,6 @@ func (o *Object) HasResolvers() bool {
 	return false
 }
 
-func (o *Object) EntityDeclaration() string {
-	resp := "(ctx context.Context, "
-	var key *Directive
-	for _, d := range o.Directives {
-		if d.Name == "key" {
-			key = d
-		}
-	}
-	for _, f := range o.Fields {
-		if key.Args[0].Value.(string) == f.Name {
-			resp += f.Name + " " + f.TypeReference.GO.String()
-		}
-	}
-	resp += ") (*"
-	resp += o.Name
-	resp += ", error)"
-	return resp
-}
-
 func (o *Object) HasUnmarshal() bool {
 	if o.Type == config.MapType {
 		return true
