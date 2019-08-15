@@ -193,7 +193,7 @@ func (f *federation) setEntities(cfg *config.Config) {
 					FieldName:    fieldName,
 					FieldTypeGQL: field.Type.String(),
 					Def:          schemaType,
-					ResolverName: fmt.Sprintf("find%sBy%s", schemaType.Name, strings.Title(fieldName)),
+					ResolverName: fmt.Sprintf("find%sBy%s", schemaType.Name, templates.ToGo(fieldName)),
 				})
 			}
 		}
