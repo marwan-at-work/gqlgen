@@ -36,6 +36,14 @@ func (f *federation) MutateConfig(cfg *config.Config) error {
 	entityFields := map[string]config.TypeMapField{}
 	for _, e := range f.Entities {
 		entityFields[e.ResolverName] = config.TypeMapField{Resolver: true}
+		for _, r := range e.Requires {
+			if cfg.Models[e.Name].Fields == nil {
+				model := cfg.Models[e.Name]
+				model.Fields = map[string]config.TypeMapField{}
+				cfg.Models[e.Name] = model
+			}
+			cfg.Models[e.Name].Fields[r.Name] = config.TypeMapField{Resolver: true}
+		}
 	}
 	builtins := config.TypeMap{
 		"_Service": {
@@ -147,6 +155,21 @@ type Entity struct {
 	FieldTypeGQL string // The GQL represetation of that field type
 	ResolverName string // The resolver name, such as FindUserByID
 	Def          *ast.Definition
+	Requires     []*Requires
+}
+
+// Requires represents an @requires clause
+type Requires struct {
+	Name   string          // the name of the field
+	Fields []*RequireField // the name of the sibling fields
+}
+
+// RequireField is similar to an entity but it is a field not
+// an object
+type RequireField struct {
+	Name   string // The same name as the type declaration
+	NameGo string // The Go struct field name
+	TypeGo string // The Go representation of that field type
 }
 
 func (f *federation) GenerateCode(data *codegen.Data) error {
@@ -161,6 +184,14 @@ func (f *federation) GenerateCode(data *codegen.Data) error {
 		for _, f := range obj.Fields {
 			if f.Name == e.FieldName {
 				e.FieldTypeGo = f.TypeReference.GO.String()
+			}
+			for _, r := range e.Requires {
+				for _, rf := range r.Fields {
+					if rf.Name == f.Name {
+						rf.TypeGo = f.TypeReference.GO.String()
+						rf.NameGo = f.GoFieldName
+					}
+				}
 			}
 		}
 	}
@@ -188,12 +219,32 @@ func (f *federation) setEntities(cfg *config.Config) {
 					panic("only single fields are currently supported in @key declaration")
 				}
 				field := schemaType.Fields.ForName(fieldName)
+				requires := []*Requires{}
+				for _, f := range schemaType.Fields {
+					dir := f.Directives.ForName("requires")
+					if dir == nil {
+						continue
+					}
+					fields := strings.Split(dir.Arguments[0].Value.Raw, " ")
+					requireFields := []*RequireField{}
+					for _, f := range fields {
+						requireFields = append(requireFields, &RequireField{
+							Name:   f,
+							TypeGo: schemaType.Fields.ForName(f).Name,
+						})
+					}
+					requires = append(requires, &Requires{
+						Name:   f.Name,
+						Fields: requireFields,
+					})
+				}
 				f.Entities = append(f.Entities, &Entity{
 					Name:         schemaType.Name,
 					FieldName:    fieldName,
 					FieldTypeGQL: field.Type.String(),
 					Def:          schemaType,
 					ResolverName: fmt.Sprintf("find%sBy%s", schemaType.Name, templates.ToGo(fieldName)),
+					Requires:     requires,
 				})
 			}
 		}
@@ -255,6 +306,12 @@ func (ec *executionContext) __resolve_entities(ctx context.Context, representati
 			if err != nil {
 				return nil, err
 			}
+			{{ range .Requires }}
+				{{ range .Fields}}
+					{{ .Name }}, _ := rep["{{.Name}}"].({{.TypeGo}})
+					resp.{{.NameGo}} = {{.Name}}
+				{{ end }}
+			{{ end }}
 			list = append(list, resp)
 		{{ end }}
 		default:
