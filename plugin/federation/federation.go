@@ -62,6 +62,11 @@ func (f *federation) MutateConfig(cfg *config.Config) error {
 		}
 		cfg.Models[typeName] = entry
 	}
+	cfg.Directives["external"] = config.DirectiveConfig{SkipRuntime: true}
+	cfg.Directives["requires"] = config.DirectiveConfig{SkipRuntime: true}
+	cfg.Directives["provides"] = config.DirectiveConfig{SkipRuntime: true}
+	cfg.Directives["key"] = config.DirectiveConfig{SkipRuntime: true}
+	cfg.Directives["extends"] = config.DirectiveConfig{SkipRuntime: true}
 
 	return nil
 }
