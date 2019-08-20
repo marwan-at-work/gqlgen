@@ -108,6 +108,13 @@ func (f *federation) MutateSchema(s *ast.Schema) error {
 			},
 		},
 	}
+	if s.Query == nil {
+		s.Query = &ast.Definition{
+			Kind: ast.Object,
+			Name: "Query",
+		}
+		s.Types["Query"] = s.Query
+	}
 	s.Query.Fields = append(s.Query.Fields, fieldDef)
 
 	// --- set _Service type ---
@@ -172,9 +179,9 @@ type Requires struct {
 // RequireField is similar to an entity but it is a field not
 // an object
 type RequireField struct {
-	Name   string // The same name as the type declaration
-	NameGo string // The Go struct field name
-	TypeGo string // The Go representation of that field type
+	Name          string                // The same name as the type declaration
+	NameGo        string                // The Go struct field name
+	TypeReference *config.TypeReference // The Go representation of that field type
 }
 
 func (f *federation) GenerateCode(data *codegen.Data) error {
@@ -193,7 +200,7 @@ func (f *federation) GenerateCode(data *codegen.Data) error {
 			for _, r := range e.Requires {
 				for _, rf := range r.Fields {
 					if rf.Name == f.Name {
-						rf.TypeGo = f.TypeReference.GO.String()
+						rf.TypeReference = f.TypeReference
 						rf.NameGo = f.GoFieldName
 					}
 				}
@@ -234,8 +241,7 @@ func (f *federation) setEntities(cfg *config.Config) {
 					requireFields := []*RequireField{}
 					for _, f := range fields {
 						requireFields = append(requireFields, &RequireField{
-							Name:   f,
-							TypeGo: schemaType.Fields.ForName(f).Name,
+							Name: f,
 						})
 					}
 					requires = append(requires, &Requires{
@@ -313,8 +319,10 @@ func (ec *executionContext) __resolve_entities(ctx context.Context, representati
 			}
 			{{ range .Requires }}
 				{{ range .Fields}}
-					{{ .Name }}, _ := rep["{{.Name}}"].({{.TypeGo}})
-					resp.{{.NameGo}} = {{.Name}}
+					resp.{{.NameGo}}, err = ec.{{.TypeReference.UnmarshalFunc}}(ctx, rep["{{.Name}}"])
+					if err != nil {
+						return nil, err
+					}
 				{{ end }}
 			{{ end }}
 			list = append(list, resp)
