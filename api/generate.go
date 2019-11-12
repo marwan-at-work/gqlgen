@@ -26,7 +26,7 @@ func Generate(cfg *config.Config, option ...Option) error {
 		modelgen.New(),
 		resolvergen.New(),
 	}
-	if cfg.Federated {
+	if cfg.Federated.IsDefined() {
 		plugins = append([]plugin.Plugin{federation.New()}, plugins...)
 	}
 
