@@ -76,7 +76,11 @@ func (f *federation) InjectSources(cfg *config.Config) {
 	f.setEntities(cfg)
 	s := "type Entity {\n"
 	for _, e := range f.Entities {
-		s += fmt.Sprintf("\t%s(%s: %s): %s!\n", e.ResolverName, e.FieldName, e.FieldTypeGQL, e.Name)
+		resolverArgs := ""
+		for _, field := range e.KeyFields {
+			resolverArgs += fmt.Sprintf("%s: %s,", field.FieldName, field.FieldTypeGQL)
+		}
+		s += fmt.Sprintf("\t%s(%s): %s!\n", e.ResolverName, resolverArgs, e.Name)
 	}
 	s += "}"
 	cfg.AdditionalSources = append(cfg.AdditionalSources, &ast.Source{Name: "entity.graphql", Input: s, BuiltIn: true})
@@ -161,13 +165,17 @@ directive @extends on OBJECT
 // Entity represents a federated type
 // that was declared in the GQL schema.
 type Entity struct {
-	Name         string // The same name as the type declaration
-	FieldName    string // The field name declared in @key
-	FieldTypeGo  string // The Go representation of that field type
-	FieldTypeGQL string // The GQL represetation of that field type
-	ResolverName string // The resolver name, such as FindUserByID
+	Name         string      // The same name as the type declaration
+	KeyFields    []*KeyField // The fields declared in @key.
+	ResolverName string      // The resolver name, such as FindUserByID
 	Def          *ast.Definition
 	Requires     []*Requires
+}
+
+type KeyField struct {
+	FieldName    string // The field name declared in @key
+	FieldTypeGo  string // The Go representation of that field type
+	FieldTypeGQL string // The GQL representation of that field type
 }
 
 // Requires represents an @requires clause
@@ -193,15 +201,19 @@ func (f *federation) GenerateCode(data *codegen.Data) error {
 	data.Objects.ByName("Entity").Root = true
 	for _, e := range f.Entities {
 		obj := data.Objects.ByName(e.Name)
-		for _, f := range obj.Fields {
-			if f.Name == e.FieldName {
-				e.FieldTypeGo = f.TypeReference.GO.String()
+		for _, field := range obj.Fields {
+			// Storing key fields in a slice rather than a map
+			// to preserve insertion order at the tradeoff of higher
+			// lookup complexity.
+			keyField := f.getKeyField(e.KeyFields, field.Name)
+			if keyField != nil {
+				keyField.FieldTypeGo = field.TypeReference.GO.String()
 			}
 			for _, r := range e.Requires {
 				for _, rf := range r.Fields {
-					if rf.Name == f.Name {
-						rf.TypeReference = f.TypeReference
-						rf.NameGo = f.GoFieldName
+					if rf.Name == field.Name {
+						rf.TypeReference = field.TypeReference
+						rf.NameGo = field.GoFieldName
 					}
 				}
 			}
@@ -216,6 +228,15 @@ func (f *federation) GenerateCode(data *codegen.Data) error {
 	})
 }
 
+func (f *federation) getKeyField(keyFields []*KeyField, fieldName string) *KeyField {
+	for _, field := range keyFields {
+		if field.FieldName == fieldName {
+			return field
+		}
+	}
+	return nil
+}
+
 func (f *federation) setEntities(cfg *config.Config) {
 	schema, err := cfg.LoadSchema()
 	if err != nil {
@@ -225,11 +246,14 @@ func (f *federation) setEntities(cfg *config.Config) {
 		if schemaType.Kind == ast.Object {
 			dir := schemaType.Directives.ForName("key") // TODO: interfaces
 			if dir != nil {
-				fieldName := dir.Arguments[0].Value.Raw // TODO: multiple arguments,a nd multiple keys
-				if strings.Contains(fieldName, " ") {
-					panic("only single fields are currently supported in @key declaration")
+				if len(dir.Arguments) > 1 {
+					panic("Multiple arguments are not currently supported in @key declaration.")
 				}
-				field := schemaType.Fields.ForName(fieldName)
+				fieldName := dir.Arguments[0].Value.Raw // TODO: multiple arguments
+				if strings.Contains(fieldName, "{") {
+					panic("Nested fields are not currently supported in @key declaration.")
+				}
+
 				requires := []*Requires{}
 				for _, f := range schemaType.Fields {
 					dir := f.Directives.ForName("requires")
@@ -248,12 +272,29 @@ func (f *federation) setEntities(cfg *config.Config) {
 						Fields: requireFields,
 					})
 				}
+
+				fieldNames := strings.Split(fieldName, " ")
+				keyFields := make([]*KeyField, len(fieldNames))
+				resolverName := fmt.Sprintf("find%sBy", schemaType.Name)
+				for i, f := range fieldNames {
+					field := schemaType.Fields.ForName(f)
+
+					keyFields[i] = &KeyField{
+						FieldName:    f,
+						FieldTypeGQL: field.Type.String(),
+					}
+					if i > 0 {
+						resolverName += "And"
+					}
+					resolverName += templates.ToGo(f)
+
+				}
+
 				f.Entities = append(f.Entities, &Entity{
 					Name:         schemaType.Name,
-					FieldName:    fieldName,
-					FieldTypeGQL: field.Type.String(),
+					KeyFields:    keyFields,
 					Def:          schemaType,
-					ResolverName: fmt.Sprintf("find%sBy%s", schemaType.Name, templates.ToGo(fieldName)),
+					ResolverName: resolverName,
 					Requires:     requires,
 				})
 			}
@@ -286,6 +327,7 @@ func (f *federation) getSDL(c *config.Config) (string, error) {
 var tmpl = `
 {{ reserveImport "context"  }}
 {{ reserveImport "errors"  }}
+{{ reserveImport "fmt"  }}
 
 {{ reserveImport "github.com/99designs/gqlgen/graphql/introspection" }}
 
@@ -308,23 +350,31 @@ func (ec *executionContext) __resolve_entities(ctx context.Context, representati
 		switch typeName {
 		{{ range .Entities }}
 		case "{{.Name}}":
-			id, ok := rep["{{.FieldName}}"].({{.FieldTypeGo}})
-			if !ok {
-				return nil, errors.New("opsies")
-			}
-			resp, err := ec.resolvers.Entity().{{.ResolverName | title}}(ctx, id)
+			resolverArgs := make([]string, {{ len .KeyFields }})
+			id, ok := "", false
+			{{ range $i, $keyField := .KeyFields -}}
+				id, ok = rep["{{$keyField.FieldName}}"].({{$keyField.FieldTypeGo}})
+				if !ok {
+					return nil, errors.New(fmt.Sprintf("Field %s undefined in schema.", "{{$keyField.FieldName}}"))
+				}
+				resolverArgs[{{$i}}] = id
+			{{end}}
+
+			entity, err := ec.resolvers.Entity().{{.ResolverName | title}}(ctx,
+				{{ range $i, $_ := .KeyFields -}} resolverArgs[{{$i}}], {{end}})
 			if err != nil {
 				return nil, err
 			}
+
 			{{ range .Requires }}
 				{{ range .Fields}}
-					resp.{{.NameGo}}, err = ec.{{.TypeReference.UnmarshalFunc}}(ctx, rep["{{.Name}}"])
+					entity.{{.NameGo}}, err = ec.{{.TypeReference.UnmarshalFunc}}(ctx, rep["{{.Name}}"])
 					if err != nil {
 						return nil, err
 					}
 				{{ end }}
 			{{ end }}
-			list = append(list, resp)
+			list = append(list, entity)
 		{{ end }}
 		default:
 			return nil, errors.New("unknown type: "+typeName)
