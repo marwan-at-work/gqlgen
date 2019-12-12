@@ -174,8 +174,8 @@ type Entity struct {
 
 type KeyField struct {
 	FieldName    string // The field name declared in @key
-	FieldTypeGo  string // The Go representation of that field type
 	FieldTypeGQL string // The GQL representation of that field type
+	TypeReference *config.TypeReference // The Go representation of that field type
 }
 
 // Requires represents an @requires clause
@@ -207,7 +207,7 @@ func (f *federation) GenerateCode(data *codegen.Data) error {
 			// lookup complexity.
 			keyField := f.getKeyField(e.KeyFields, field.Name)
 			if keyField != nil {
-				keyField.FieldTypeGo = field.TypeReference.GO.String()
+				keyField.TypeReference = field.TypeReference
 			}
 			for _, r := range e.Requires {
 				for _, rf := range r.Fields {
@@ -350,18 +350,15 @@ func (ec *executionContext) __resolve_entities(ctx context.Context, representati
 		switch typeName {
 		{{ range .Entities }}
 		case "{{.Name}}":
-			resolverArgs := make([]string, {{ len .KeyFields }})
-			id, ok := "", false
 			{{ range $i, $keyField := .KeyFields -}}
-				id, ok = rep["{{$keyField.FieldName}}"].({{$keyField.FieldTypeGo}})
-				if !ok {
+				id{{$i}}, err := ec.{{.TypeReference.UnmarshalFunc}}(ctx, rep["{{$keyField.FieldName}}"])
+				if err != nil {
 					return nil, errors.New(fmt.Sprintf("Field %s undefined in schema.", "{{$keyField.FieldName}}"))
 				}
-				resolverArgs[{{$i}}] = id
 			{{end}}
 
 			entity, err := ec.resolvers.Entity().{{.ResolverName | title}}(ctx,
-				{{ range $i, $_ := .KeyFields -}} resolverArgs[{{$i}}], {{end}})
+				{{ range $i, $_ := .KeyFields -}} id{{$i}}, {{end}})
 			if err != nil {
 				return nil, err
 			}
