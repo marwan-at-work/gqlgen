@@ -93,16 +93,17 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 		PackageName: cfg.Model.Package,
 	}
 
-	var hasEntity bool
+	hasEntity := false
 	for _, schemaType := range schema.Types {
 		if cfg.Models.UserDefined(schemaType.Name) {
 			continue
 		}
-		var ent bool
+		ent := false
 		for _, dir := range schemaType.Directives {
 			if dir.Name == "key" {
 				hasEntity = true
 				ent = true
+				break
 			}
 		}
 		switch schemaType.Kind {
